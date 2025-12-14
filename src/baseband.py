@@ -1,54 +1,77 @@
 import numpy as np
-from typing import List, Dict
+from typing import List, Tuple, Dict
 
 class BasebandProcessor:
     """
     Central Baseband Processor.
-    Combines signals from multiple RF chains based on their self-reported quality metrics.
+    Optimizes the combination of synthesized beams from multiple RF chains.
     """
 
-    def process_smart(self, rf_signals: List[complex], beam_metrics_list: List[Dict]) -> complex:
+    def __init__(self):
+        self.weights = None
+
+    def optimize_weights(
+        self,
+        rf_chains: List,
+        target: Tuple[float, float],
+        interferers: List[Tuple[float, float]]
+    ) -> np.ndarray:
         """
-        Combines RF signals using weights derived from beam metrics.
+        Calculates optimal baseband weights to combine RF signals.
+        Goal: Gain=1 at Target, Gain=0 at Interferers/Risk Angles.
+        Method: Minimum Norm Solution (Pseudo-Inverse).
 
         Args:
-            rf_signals: List of complex IQ samples (one per RF chain).
-            beam_metrics_list: List of dictionaries from RFChain.analyze_performance().
+            rf_chains: List of RFChain objects.
+            target: (az, el) tuple.
+            interferers: List of (az, el) tuples (Explicit Nulls + Risk Angles).
 
         Returns:
-            Combined complex signal.
+            Complex weights vector (size M).
         """
-        if len(rf_signals) != len(beam_metrics_list):
-            raise ValueError("Number of signals must match number of metrics reports.")
+        num_chains = len(rf_chains)
+        if num_chains == 0:
+            return np.array([])
 
-        weights = []
+        # 1. Build Response Matrix H (K_constraints x M_chains)
+        # Constraints:
+        # Row 0: Target response = 1
+        # Row 1..K: Interferer response = 0
 
-        for metrics in beam_metrics_list:
-            # Heuristic Purity Score Calculation
-            # We want High Purity = High Weight.
-            # Good beam: High Null Depth (e.g. 40dB), High SLL suppression (e.g. 20dB).
-            # Bad beam: Low Null Depth (e.g. 5dB), Low SLL suppression (e.g. 3dB).
+        constraints_dirs = [target] + interferers
+        # Scale target constraint to number of chains to represent array gain
+        constraints_vals = [float(num_chains) + 0j] + [0.0 + 0j] * len(interferers)
 
-            null_depth = metrics.get("min_null_depth_db", 0.0)
-            sll_suppression = metrics.get("peak_sll_db", 0.0)
+        H_rows = []
 
-            # Simple linear combination
-            # Note: inputs are "dB difference", so higher is better.
-            # Avoid negative weights if metrics are weird, though these should be positive.
-            score = null_depth + sll_suppression
+        for az, el in constraints_dirs:
+            # For each direction, get the complex response of every RF chain
+            # row = [AF_1(theta), AF_2(theta), ..., AF_M(theta)]
+            row_responses = []
+            for chain in rf_chains:
+                resp = chain.get_complex_response(az, el)
+                row_responses.append(resp)
+            H_rows.append(row_responses)
 
-            # Ensure non-negative
-            score = max(score, 1e-6)
+        H = np.array(H_rows, dtype=complex) # (K, M)
+        d = np.array(constraints_vals, dtype=complex) # (K,)
 
-            weights.append(score)
+        # 2. Solve H w = d
+        # If K < M (Underdetermined): Many solutions, pick min norm (pinv).
+        # If K > M (Overdetermined): No exact solution, pick min error (pinv).
+        # pinv handles both.
 
-        weights = np.array(weights)
+        self.weights = np.linalg.pinv(H) @ d
 
-        # Normalize weights
-        if np.sum(weights) > 0:
-            weights = weights / np.sum(weights)
+        return self.weights
 
-        # Combine
-        combined_signal = np.dot(weights, np.array(rf_signals))
+    def process_signals(self, rf_signals: List[complex]) -> complex:
+        """
+        Apply computed weights to incoming signals.
+        """
+        if self.weights is None:
+            raise ValueError("Weights not optimized yet. Call optimize_weights first.")
+        if len(rf_signals) != len(self.weights):
+            raise ValueError("Signal dimension mismatch.")
 
-        return combined_signal
+        return np.dot(self.weights, np.array(rf_signals))

@@ -219,3 +219,17 @@ class RFChain:
             "peak_sll_db": float(peak_sll_db),
             "risk_angles": risk_angles
         }
+
+    def get_complex_response(self, az: float, el: float) -> complex:
+        """
+        Calculates the complex Array Factor at a given direction.
+
+        Args:
+            az: Azimuth angle in degrees.
+            el: Elevation angle in degrees.
+
+        Returns:
+            Complex response (w^H * a).
+        """
+        sv = self.panel.get_steering_vector(az, el)
+        return np.dot(self.current_weights.conj(), sv)

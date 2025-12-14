@@ -62,7 +62,9 @@ class MultiPanelSystem:
             A_scan = np.exp(1j * phases)
 
             # AF_i: (1, N_points)
-            af_i = chain.current_weights.conj() @ A_scan
+            # Apply Element Pattern Mask
+            pattern_mask = chain.panel.get_element_pattern_grid(az_grid, el_grid).flatten()
+            af_i = (chain.current_weights.conj() @ A_scan) * pattern_mask
 
             # Add to total with baseband weight
             total_response += weights[i] * af_i

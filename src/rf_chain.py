@@ -114,9 +114,14 @@ class RFChain:
         # Steering Matrix A_scan
         A_scan = np.exp(1j * phases)
 
+        # Apply Element Pattern Mask
+        # This accounts for the fact that panels are directional
+        pattern_mask = self.panel.get_element_pattern_grid(az_grid, el_grid)
+        pattern_mask_flat = pattern_mask.flatten()
+
         # Beam Pattern (Voltage)
         # response: (1, N_points)
-        response = self.current_weights.conj() @ A_scan
+        response = (self.current_weights.conj() @ A_scan) * pattern_mask_flat
 
         # Power Gain
         gain_linear = np.abs(response)**2

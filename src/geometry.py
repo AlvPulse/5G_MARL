@@ -159,3 +159,41 @@ class SparsePlanarPanel:
             return float(cos_theta) ** 1.0 # Cosine pattern power 1
         else:
             return 0.0 # Strict front-only
+
+    def get_element_pattern_grid(self, az_grid: np.ndarray, el_grid: np.ndarray) -> np.ndarray:
+        """
+        Vectorized version of get_element_pattern for meshgrids.
+
+        Args:
+            az_grid: Array of global azimuth angles.
+            el_grid: Array of global elevation angles.
+
+        Returns:
+            Array of gains (same shape as inputs).
+        """
+        # Global direction vectors
+        az_rad = np.radians(az_grid)
+        el_rad = np.radians(el_grid)
+
+        u = np.cos(el_rad) * np.cos(az_rad)
+        v = np.cos(el_rad) * np.sin(az_rad)
+        w = np.sin(el_rad)
+
+        # Stack into (3, N) for matrix multiplication
+        # Flatten first
+        u_flat = u.flatten()
+        v_flat = v.flatten()
+        w_flat = w.flatten()
+
+        global_dirs = np.stack([u_flat, v_flat, w_flat], axis=0) # (3, N_points)
+
+        # Transform to local frame: V_local = R^T * V_global
+        local_dirs = self.rotation_matrix.T @ global_dirs # (3, N_points)
+
+        # Cos theta = local_dirs[2, :]
+        cos_theta = local_dirs[2, :]
+
+        # Apply pattern: max(0, cos_theta)^1.0
+        pattern = np.maximum(cos_theta, 0.0) ** 1.0
+
+        return pattern.reshape(az_grid.shape)

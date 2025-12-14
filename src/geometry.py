@@ -197,3 +197,37 @@ class SparsePlanarPanel:
         pattern = np.maximum(cos_theta, 0.0) ** 1.0
 
         return pattern.reshape(az_grid.shape)
+
+    def is_visible(self, az_deg: float, el_deg: float, fov_deg: float = 60.0) -> bool:
+        """
+        Checks if a global direction is within the visible Field of View.
+
+        Args:
+            az_deg, el_deg: Global direction.
+            fov_deg: Maximum angle from boresight (normal) to consider visible.
+
+        Returns:
+            True if within FoV, False otherwise.
+        """
+        # Re-use simple cosine calculation
+        # Global direction vector
+        az_rad = np.radians(az_deg)
+        el_rad = np.radians(el_deg)
+
+        u = np.cos(el_rad) * np.cos(az_rad)
+        v = np.cos(el_rad) * np.sin(az_rad)
+        w = np.sin(el_rad)
+
+        global_dir = np.array([u, v, w])
+
+        # Transform to local frame
+        local_dir = self.rotation_matrix.T @ global_dir
+
+        # Cos theta = local_dir[2]
+        cos_theta = local_dir[2]
+
+        # Check angle
+        # cos(fov) < cos(theta) <= 1
+        min_cos = np.cos(np.radians(fov_deg))
+
+        return cos_theta >= min_cos

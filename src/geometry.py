@@ -68,54 +68,39 @@ class SparsePlanarPanel:
         self.local_positions = np.stack([xx[self.mask], yy[self.mask], zz[self.mask]], axis=1) # (N_active, 3)
         self.num_elements = self.local_positions.shape[0]
 
-        # 2. Rotate and Translate to Global Coordinates
+        # 2. Compute Rotation Matrix
+        self.rotation_matrix = self._compute_rotation_matrix()
+
+        # 3. Rotate and Translate to Global Coordinates
         self.global_positions = self._transform_to_global(self.local_positions)
 
-    def _transform_to_global(self, local_pos: np.ndarray) -> np.ndarray:
+    def _compute_rotation_matrix(self) -> np.ndarray:
         """
-        Rotates and translates local positions to global frame.
-        Convention:
-        - Local Panel Normal is +Z (0,0,1).
-        - We rotate local Z to align with global target (az, el).
-        - Method:
-            1. Start with normal along Z.
-            2. Rotate by -(90 - el) around Y axis (Pitch).
-               If el=90 (Zenith), rotation is 0. Normal stays Z.
-               If el=0 (Horizon), rotation is -90. Normal becomes X.
-            3. Rotate by az around Z axis (Yaw).
-               If az=0, Normal X stays X.
-               If az=90, Normal X becomes Y.
+        Computes the rotation matrix R to transform local to global frame.
         """
-        # Convert to radians
         az_rad = np.radians(self.az_deg)
-        # Pitch angle: To bring Z to the elevation angle.
-        # Initial Z is at el=90. We want to reach 'el'.
-        # We rotate around Y axis.
-        # Rule for Ry(theta): rotates Z towards X.
-        # We want to rotate Z towards X by (90 - el).
         pitch_rad = np.radians(90.0 - self.el_deg)
 
-        # Rotation Matrices
-        # Ry (Pitch)
         Ry = np.array([
             [np.cos(pitch_rad), 0, np.sin(pitch_rad)],
             [0,                 1, 0],
             [-np.sin(pitch_rad),0, np.cos(pitch_rad)]
         ])
 
-        # Rz (Yaw)
         Rz = np.array([
             [np.cos(az_rad), -np.sin(az_rad), 0],
             [np.sin(az_rad),  np.cos(az_rad), 0],
             [0,               0,              1]
         ])
 
-        # Combined Rotation R = Rz * Ry
-        # Order: First tilt (Ry), then spin (Rz)
-        R = Rz @ Ry
+        return Rz @ Ry
 
+    def _transform_to_global(self, local_pos: np.ndarray) -> np.ndarray:
+        """
+        Rotates and translates local positions to global frame.
+        """
         # Apply rotation: pos_global = R @ pos_local.T
-        rotated_pos = (R @ local_pos.T).T
+        rotated_pos = (self.rotation_matrix @ local_pos.T).T
 
         # Apply translation
         global_pos = rotated_pos + self.position
@@ -125,20 +110,8 @@ class SparsePlanarPanel:
     def get_steering_vector(self, az_deg: float, el_deg: float) -> np.ndarray:
         """
         Calculates the steering vector for a given GLOBAL direction.
-
-        Args:
-            az_deg: Global Azimuth (degrees).
-            el_deg: Global Elevation (degrees).
-
-        Returns:
-            Complex numpy array of shape (num_elements,).
+        Includes Element Pattern.
         """
-        # 1. Calculate Wave Vector k (pointing TO the target)
-        # k = (2*pi/lambda) * [u, v, w]
-        # u = cos(el)cos(az)
-        # v = cos(el)sin(az)
-        # w = sin(el)
-
         az_rad = np.radians(az_deg)
         el_rad = np.radians(el_deg)
 
@@ -150,26 +123,39 @@ class SparsePlanarPanel:
 
         k_vec = (2 * np.pi / self.wavelength) * direction_vector
 
-        # 2. Calculate Phase Delays
-        # phase = -k dot p
-        # We use the dot product of k with each position vector.
-        # global_positions: (N, 3)
-        # k_vec: (3,)
-
+        # Phase delays
         phases = -np.dot(self.global_positions, k_vec)
-
-        # 3. Construct Steering Vector
-        # a = exp(j * phases)
         sv = np.exp(1j * phases)
 
-        # Apply element pattern (optional/placeholder)
-        sv = sv * self.get_element_pattern(az_deg, el_deg)
+        # Apply element pattern
+        pattern = self.get_element_pattern(az_deg, el_deg)
+        sv = sv * pattern
 
         return sv
 
     def get_element_pattern(self, az_deg: float, el_deg: float) -> float:
         """
         Returns the element gain (magnitude) for a given direction.
-        Placeholder for isotropic elements.
+        Uses Cosine pattern based on angle from Panel Normal.
         """
-        return 1.0
+        # Global direction vector
+        az_rad = np.radians(az_deg)
+        el_rad = np.radians(el_deg)
+
+        u = np.cos(el_rad) * np.cos(az_rad)
+        v = np.cos(el_rad) * np.sin(az_rad)
+        w = np.sin(el_rad)
+
+        global_dir = np.array([u, v, w])
+
+        # Transform to local frame: v_local = R^T * v_global
+        local_dir = self.rotation_matrix.T @ global_dir
+
+        # Local normal is Z (0,0,1). Cos theta = local_dir[2]
+        cos_theta = local_dir[2]
+
+        # Back lobe suppression: if cos_theta < 0, return small gain or 0
+        if cos_theta > 0:
+            return float(cos_theta) ** 1.0 # Cosine pattern power 1
+        else:
+            return 0.0 # Strict front-only

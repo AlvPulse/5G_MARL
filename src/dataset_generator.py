@@ -19,18 +19,21 @@ def generate_dataset(
 
     # 1. System Setup (Static)
     # 4 Panels (N, E, S, W)
-    orientations = [(0, 90), (90, 90), (180, 90), (270, 90)]
+    # Use horizontal mounting (El=0) for realistic building coverage
+    orientations = [(0, 0), (90, 0), (180, 0), (270, 0)]
     positions = [(1,0,0), (0,1,0), (-1,0,0), (0,-1,0)]
-    rows, cols = 8, 8
+
+    # User Requirement: Rectangular 16x4 Arrays
+    rows, cols = 16, 4
     freq = 28e9
 
     # Create Panels
     panels = []
     for i in range(4):
-        # 20% Sparsity
+        # 50% Sparsity (More challenging)
         total = rows * cols
         mask_flat = np.ones(total, dtype=bool)
-        mask_flat[np.random.choice(total, int(0.2*total), replace=False)] = False
+        mask_flat[np.random.choice(total, int(0.5*total), replace=False)] = False
         mask = mask_flat.reshape((rows, cols))
 
         p = SparsePlanarPanel(rows, cols, freq, mask, positions[i], orientations[i])

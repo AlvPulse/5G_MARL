@@ -97,10 +97,15 @@ class BeamformingBrain:
             # But here "distribution part... baseband should create new high purity beams".
             # Let's stick to explicit targets as interferers for now.
 
-            self.system.baseband.optimize_weights(self.system.rf_chains, target, interferers)
+            weights = self.system.baseband.optimize_weights(self.system.rf_chains, target, interferers)
 
             # Analyze Stream
             metrics = self.system.analyze_system_performance(target[0], target[1], interferers)
+
+            # Store weights in results for evaluation
+            # Convert to list for JSON serialization if needed later, but here numpy is fine
+            metrics['weights'] = weights
+
             results[i] = metrics
 
         return results

@@ -8,6 +8,8 @@ from src.algorithms import IterativePOCSSolver
 from src.rf_chain import RFChain
 from src.baseband import BasebandProcessor
 from src.system import MultiPanelSystem
+from src.brain import BeamformingBrain
+from src.evaluator import SystemEvaluator
 
 def generate_dataset(
     num_samples: int = 10,
@@ -18,10 +20,20 @@ def generate_dataset(
     """
 
     # 1. System Setup (Static)
-    # 4 Panels (N, E, S, W)
-    # Use horizontal mounting (El=0) for realistic building coverage
-    orientations = [(0, 0), (90, 0), (180, 0), (270, 0)]
-    positions = [(1,0,0), (0,1,0), (-1,0,0), (0,-1,0)]
+    # 8 Panels (Octagon) - User Requirement
+    # Angles: 0, 45, 90, 135, 180, 225, 270, 315
+    num_panels = 8
+    radius = 1.0
+    orientations = []
+    positions = []
+
+    for i in range(num_panels):
+        az = i * (360.0 / num_panels)
+        orientations.append((az, 0)) # Horizontal
+        # Position on circle
+        x = radius * np.cos(np.radians(az))
+        y = radius * np.sin(np.radians(az))
+        positions.append((x, y, 0))
 
     # User Requirement: Rectangular 16x4 Arrays
     rows, cols = 16, 4
@@ -29,7 +41,7 @@ def generate_dataset(
 
     # Create Panels
     panels = []
-    for i in range(4):
+    for i in range(num_panels):
         # 50% Sparsity (More challenging)
         total = rows * cols
         mask_flat = np.ones(total, dtype=bool)
@@ -39,86 +51,70 @@ def generate_dataset(
         p = SparsePlanarPanel(rows, cols, freq, mask, positions[i], orientations[i])
         panels.append(p)
 
-    print(f"Generating {num_samples} samples...")
+    print(f"Generating {num_samples} samples with 8 panels and SINR evaluation...")
 
     with open(output_file, 'w') as f:
         for sample_idx in range(num_samples):
-            # 2. Random Scenario
-            # Target in reasonable FOV (e.g., Az -60 to 60 relative to global? No, global 360)
-            # Let's pick random Az 0-360, El 5-45
-            t_az = np.random.uniform(0, 360)
-            t_el = np.random.uniform(5, 45)
-            target = (t_az, t_el)
+            # 2. Define Ground Truth Targets (2 to 4 users)
+            num_users = np.random.randint(2, 5)
+            gt_targets = []
+            for _ in range(num_users):
+                t_az = np.random.uniform(0, 360)
+                t_el = np.random.uniform(5, 45)
+                gt_targets.append((t_az, t_el))
 
-            # Interferers (1 to 3)
-            num_int = np.random.randint(1, 4)
-            interferers = []
-            for _ in range(num_int):
-                # Ensure not too close to target (min 10 deg separation)
-                while True:
-                    i_az = np.random.uniform(0, 360)
-                    i_el = np.random.uniform(5, 45)
-                    # Check dist
-                    if abs(i_az - t_az) > 10 or abs(i_el - t_el) > 10:
-                        interferers.append((i_az, i_el))
-                        break
+            # 3. Create Hypothesized Targets (Ground Truth + Error)
+            # Simulate "Brain" estimation error (e.g., +/- 5 degrees)
+            hyp_targets = []
+            for t in gt_targets:
+                err_az = np.random.normal(0, 2.0)
+                err_el = np.random.normal(0, 2.0)
+                hyp_targets.append((t[0] + err_az, t[1] + err_el))
 
-            # 3. RF Stage
+            # 4. Setup System Components
             chains = []
-            rf_metrics_list = []
-            risk_angles_all = []
-
-            # Re-create solvers/chains fresh or reset them
             for p in panels:
                 # Use fewer iterations for speed in dataset gen
-                solver = IterativePOCSSolver(max_iterations=30)
+                solver = IterativePOCSSolver(max_iterations=20)
                 chain = RFChain(p, solver)
-
-                # RF Agent Action: Point to Target, Null known Interferers
-                chain.set_beam(t_az, t_el, interferers)
-
-                # RF Analysis
-                m = chain.analyze_performance(t_az, t_el, interferers)
-                rf_metrics_list.append(m)
-                risk_angles_all.extend(m['risk_angles'])
                 chains.append(chain)
 
-            # 4. Baseband Stage
             baseband = BasebandProcessor()
             system = MultiPanelSystem(panels, chains, baseband)
+            brain = BeamformingBrain(system)
+            evaluator = SystemEvaluator(system)
 
-            # Optimization Inputs: Target, Explicit Interferers, Reported Risk Angles
-            # Filter risk angles (remove duplicates or too close to target)
-            unique_risks = []
-            for ra in risk_angles_all:
-                # Check duplication against interferers and target
-                is_new = True
-                # Check dist to target
-                if abs(ra[0] - t_az) < 5 and abs(ra[1] - t_el) < 5:
-                    is_new = False
-                if is_new:
-                    unique_risks.append(ra)
+            # 5. Run Brain Logic (Distribution + Beamforming)
+            # This updates the RF chains and calculates baseband weights for each hyp_target
+            brain_results = brain.distribute_and_process(hyp_targets, fov_deg=60.0)
 
-            # Limit number of constraints to avoid over-constraining
-            # Max constraints < Total Elements? No, baseband has M degrees of freedom (4).
-            # If we add too many constraints, pinv will find min-error solution.
-            # Let's prioritize Explicit Interferers + Top 2 Risk Angles
-            constraints_list = interferers + unique_risks[:2]
+            # Extract weights for Evaluator
+            weights_dict = {}
+            for i, metrics in brain_results.items():
+                if 'weights' in metrics:
+                    weights_dict[i] = metrics['weights']
 
-            baseband.optimize_weights(chains, target, constraints_list)
+            # 6. Evaluate SINR against Ground Truth
+            sinr_metrics = evaluator.compute_sinr_metrics(
+                gt_targets, weights_dict, hyp_targets, noise_power_db=-100.0
+            )
 
-            # 5. System Analysis
-            sys_metrics = system.analyze_system_performance(t_az, t_el, constraints_list)
+            # 7. Save Data
+            # Clean numpy arrays for JSON
+            cleaned_brain_results = {}
+            for k, v in brain_results.items():
+                v_clean = v.copy()
+                if 'weights' in v_clean:
+                    # Convert complex weights to list of strings
+                    v_clean['weights'] = [str(w) for w in v_clean['weights']]
+                cleaned_brain_results[k] = v_clean
 
-            # 6. Save Data
             record = {
                 "id": sample_idx,
-                "target": target,
-                "interferers": interferers,
-                "rf_metrics": rf_metrics_list, # Initial State
-                "baseband_weights": [str(w) for w in baseband.weights], # Action
-                "system_metrics": sys_metrics, # Reward/Result
-                "constraints_used": constraints_list
+                "ground_truth_targets": gt_targets,
+                "hypothesized_targets": hyp_targets,
+                "brain_metrics": cleaned_brain_results,
+                "sinr_evaluation": sinr_metrics
             }
 
             f.write(json.dumps(record) + "\n")
